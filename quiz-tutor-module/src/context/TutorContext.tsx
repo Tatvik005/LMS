@@ -1,11 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import type { ChatMessage } from '../types';
-import { generateTutorResponse } from '../lib/gemini';
+import { generateTutorResponse, type FileData } from '../lib/gemini';
 
 interface TutorContextType {
   messages: ChatMessage[];
   isTyping: boolean;
-  sendMessage: (content: string, pdfContext?: string) => Promise<void>;
+  activeFileName: string | null;
+  activeFileData: FileData | null;
+  setActiveDocument: (fileData: FileData, fileName: string) => void;
+  clearActiveDocument: () => void;
+  sendMessage: (content: string, overrideFileData?: FileData) => Promise<void>;
   clearHistory: () => void;
 }
 
@@ -14,6 +18,8 @@ const TutorContext = createContext<TutorContextType | undefined>(undefined);
 export const TutorProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isTyping, setIsTyping] = useState(false);
+  const [activeFileName, setActiveFileName] = useState<string | null>(null);
+  const [activeFileData, setActiveFileData] = useState<FileData | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem('tutor_chat_history');
@@ -23,7 +29,7 @@ export const TutorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setMessages([{
         id: 'welcome',
         role: 'ai',
-        content: 'Hello! I am your AI Teaching Assistant. How can I help you today? You can ask me to explain concepts, generate MCQs, create study notes, or even upload a PDF for me to summarize.',
+        content: 'Hello! I am your AI Teaching Assistant. How can I help you today? You can ask me to explain concepts, generate MCQs, create study notes, or even upload a document for me to summarize.',
         timestamp: new Date().toISOString()
       }]);
     }
@@ -33,7 +39,17 @@ export const TutorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     localStorage.setItem('tutor_chat_history', JSON.stringify(messages));
   }, [messages]);
 
-  const sendMessage = async (content: string, pdfContext?: string) => {
+  const setActiveDocument = (fileData: FileData, fileName: string) => {
+    setActiveFileData(fileData);
+    setActiveFileName(fileName);
+  };
+
+  const clearActiveDocument = () => {
+    setActiveFileData(null);
+    setActiveFileName(null);
+  };
+
+  const sendMessage = async (content: string, overrideFileData?: FileData) => {
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
@@ -45,7 +61,8 @@ export const TutorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setIsTyping(true);
 
     try {
-      const aiResponse = await generateTutorResponse(content, pdfContext);
+      const fileToSend = overrideFileData || activeFileData;
+      const aiResponse = await generateTutorResponse(content, messages, fileToSend || undefined);
       
       const aiMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
@@ -73,7 +90,16 @@ export const TutorProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   };
 
   return (
-    <TutorContext.Provider value={{ messages, isTyping, sendMessage, clearHistory }}>
+    <TutorContext.Provider value={{ 
+      messages, 
+      isTyping, 
+      activeFileName, 
+      activeFileData, 
+      sendMessage, 
+      clearHistory, 
+      setActiveDocument, 
+      clearActiveDocument 
+    }}>
       {children}
     </TutorContext.Provider>
   );

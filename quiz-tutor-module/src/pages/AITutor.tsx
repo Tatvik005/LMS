@@ -2,27 +2,43 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import { useTutor } from '../context/TutorContext';
-import { extractTextFromPDF } from '../lib/pdfParser';
 import { 
   Send, Bot, User, FileText, UploadCloud, 
   Lightbulb, List, FileQuestion, Calendar 
 } from 'lucide-react';
 
-const INTENTS = [
-  { id: 'explain', icon: <Lightbulb size={18} />, text: 'Explain Concept', prompt: 'Explain the concept of Binary Search Trees with examples.' },
-  { id: 'mcq', icon: <FileQuestion size={18} />, text: 'Generate MCQs', prompt: "Give me 5 MCQs on Dijkstra's Algorithm with an answer key." },
-  { id: 'notes', icon: <List size={18} />, text: 'Create Notes', prompt: 'Make bullet-point revision notes for OS Scheduling.' },
-  { id: 'study_plan', icon: <Calendar size={18} />, text: 'Study Plan', prompt: 'Make a 7-day study plan for a DBMS exam.' },
-];
+// INTENTS moved inside component to support dynamic prompts
 
 export const AITutor: React.FC = () => {
-  const { messages, isTyping, sendMessage } = useTutor();
+  const { messages, isTyping, sendMessage, activeFileName, activeFileData, setActiveDocument, clearActiveDocument } = useTutor();
   const [inputValue, setInputValue] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-  const [pdfContextText, setPdfContextText] = useState<string | null>(null);
-  const [pdfFileName, setPdfFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const getDynamicPrompt = (baseAction: string) => {
+    if (inputValue.trim()) {
+      return `${baseAction} based on this topic: ${inputValue}`;
+    }
+    if (activeFileName) {
+      return `${baseAction} based on the attached document ${activeFileName}.`;
+    }
+    if (messages.length > 1) {
+       return `${baseAction} based on the topic we are currently discussing.`;
+    }
+    return `${baseAction} for a general topic of your choice.`;
+  };
+
+  const INTENTS = [
+    { id: 'explain', icon: <Lightbulb size={18} />, text: 'Explain Concept', 
+      prompt: getDynamicPrompt('Explain the key concepts') },
+    { id: 'mcq', icon: <FileQuestion size={18} />, text: 'Generate MCQs', 
+      prompt: getDynamicPrompt('Generate 5 MCQs with an answer key') },
+    { id: 'notes', icon: <List size={18} />, text: 'Create Notes', 
+      prompt: getDynamicPrompt('Make bullet-point revision notes') },
+    { id: 'study_plan', icon: <Calendar size={18} />, text: 'Study Plan', 
+      prompt: getDynamicPrompt('Create a comprehensive study plan') },
+  ];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -33,15 +49,13 @@ export const AITutor: React.FC = () => {
   }, [messages, isTyping]);
 
   const handleSend = () => {
-    if (!inputValue.trim() && !pdfContextText) return;
+    if (!inputValue.trim() && !activeFileName) return;
     
     let prompt = inputValue || "Summarize the attached document into key points, important definitions, and 5 likely exam questions.";
     
-    sendMessage(prompt, pdfContextText || undefined);
+    sendMessage(prompt);
     
     setInputValue('');
-    setPdfContextText(null);
-    setPdfFileName(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -57,28 +71,41 @@ export const AITutor: React.FC = () => {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || file.type !== 'application/pdf') {
-      alert("Please upload a valid PDF file.");
-      return;
-    }
+    if (!file) return;
+
+    // Immediately clear the input value so the same file can be uploaded again
+    e.target.value = '';
 
     setIsUploading(true);
+    
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      try {
+        if (!reader.result) return;
+        
+        const resultStr = reader.result as string;
+        const commaIdx = resultStr.indexOf(',');
+        const base64String = commaIdx !== -1 ? resultStr.substring(commaIdx + 1) : resultStr;
+        
+        const fileData = { mimeType: file.type || 'application/pdf', data: base64String };
+        
+        setActiveDocument(fileData, file.name);
+        
+        // Auto-send a summarization request upon upload
+        sendMessage(`Please review the attached document: ${file.name}. Summarize it into key points, important definitions, and a few likely exam questions if applicable.`, fileData);
+      } catch (err) {
+        console.error("File processing error:", err);
+        sendMessage(`I encountered a local error while preparing the file: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      } finally {
+        setIsUploading(false);
+      }
+    };
+    
     try {
-      const extractedText = await extractTextFromPDF(file);
-      setPdfContextText(extractedText);
-      setPdfFileName(file.name);
-      
-      // Auto-send a summarization request upon upload
-      sendMessage("Summarize the attached document into key points, important definitions, and 5 likely exam questions.", extractedText);
-      setPdfContextText(null);
-      setPdfFileName(null);
-      
+      reader.readAsDataURL(file);
     } catch (error) {
-      console.error(error);
-      alert("Failed to read PDF. It might be corrupted or protected.");
-    } finally {
+      console.error("FileReader error:", error);
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -162,34 +189,41 @@ export const AITutor: React.FC = () => {
             ))}
           </div>
 
-          {pdfFileName && (
+          {activeFileName && (
             <div className="mb-3 inline-flex items-center gap-2 px-3 py-1.5 bg-accent-primary/20 border border-accent-primary/30 rounded-md text-sm text-accent-primary">
               <FileText size={16} />
-              {pdfFileName}
+              {activeFileName}
+              <button 
+                onClick={clearActiveDocument}
+                className="ml-2 hover:text-white transition"
+                title="Remove attached document"
+              >
+                &times;
+              </button>
             </div>
           )}
 
           <div className="flex gap-2">
             <input 
+              id="tutor-file-upload"
               type="file" 
-              accept=".pdf" 
+              accept=".pdf,.txt,.md,.csv,.jpg,.jpeg,.png,.doc,.docx" 
               className="hidden" 
-              ref={fileInputRef}
               onChange={handleFileUpload}
+              onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
             />
             
-            <button 
-              className={`btn-icon w-12 h-12 flex items-center justify-center shrink-0 border border-slate-700 bg-slate-800 transition ${isUploading ? 'animate-pulse opacity-50' : 'hover:bg-slate-700 text-accent-secondary'}`}
-              onClick={() => fileInputRef.current?.click()}
-              title="Upload PDF for Summarization"
-              disabled={isUploading || isTyping}
+            <label 
+              htmlFor="tutor-file-upload"
+              className={`btn-icon cursor-pointer w-12 h-12 flex items-center justify-center shrink-0 border border-slate-700 bg-slate-800 transition ${isUploading || isTyping ? 'animate-pulse opacity-50 pointer-events-none' : 'hover:bg-slate-700 text-accent-secondary'}`}
+              title="Upload document for Summarization"
             >
               <UploadCloud size={24} />
-            </button>
+            </label>
             
             <textarea
               className="form-textarea min-h-[48px] h-12 flex-1 resize-none py-3"
-              placeholder="Ask anything or upload a PDF to summarize..."
+              placeholder="Ask anything or upload a document to summarize..."
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -199,7 +233,7 @@ export const AITutor: React.FC = () => {
             <button 
               className="btn btn-primary w-12 h-12 p-0 flex items-center justify-center shrink-0 disabled:opacity-50"
               onClick={handleSend}
-              disabled={(!inputValue.trim() && !pdfContextText) || isTyping || isUploading}
+              disabled={(!inputValue.trim() && !activeFileName) || isTyping || isUploading}
             >
               <Send size={20} />
             </button>
